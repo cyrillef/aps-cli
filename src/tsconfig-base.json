@@ -1,0 +1,30 @@
+{
+	"compilerOptions": {
+		"target": "es2020",
+		"types": ["node"],
+		"composite": true,
+		"noImplicitReturns": true,
+		//"noUnusedLocals": true,
+		//"noUnusedParameters": true,
+		"sourceMap": true,
+		"strict": true,
+		"alwaysStrict": true,
+		"noImplicitAny": true,
+		"experimentalDecorators": true,
+		"emitDecoratorMetadata": true,
+		"skipLibCheck": true,
+		"resolveJsonModule": true,
+		"esModuleInterop": true,
+		"removeComments": true,
+		//"traceResolution": true,
+	},
+	"include": [
+		// "**/*.ts",
+		// "**/*.tsx"
+	],
+	"exclude": [
+		"**/node_modules/*",
+		"bin",
+		"public"
+	]
+}
