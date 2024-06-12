@@ -15,7 +15,6 @@
 // UNINTERRUPTED OR ERROR FREE.
 //
 
-import { unlink } from 'fs';
 import _fs from 'fs/promises';
 import _path from 'path';
 

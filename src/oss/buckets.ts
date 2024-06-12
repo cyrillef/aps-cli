@@ -24,38 +24,39 @@ import AppSettings from '@/app/app-settings';
 import { sdkmanager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
 import { Buckets, BucketsItems, GetBucketsRegionEnum, OssClient } from '@aps_sdk/oss';
-import TLogger from '@/utils/logger';
+import TLogger, { errorMessage } from '@/utils/logger';
+import TwoLeggedClient from '@/oauth/2legged';
 
 export class BucketsClient {
 
-	private sdkmanager: SdkManager | null = null;
-	private client: OssClient | null = null;
+	private client: OssClient;
 
-	protected constructor(sdkmanager: SdkManager) {
-		this.sdkmanager = sdkmanager;
+	protected constructor(private sdkmanager: SdkManager) {
 		this.client = new OssClient(this.sdkmanager);
 	}
 
 	public static async buckets(cmd: string, bucket: string, options: any): Promise<void> {
 		!options.debug && (sdkmanager.logger = new TLogger());
-		const bucketsClient: BucketsClient = new BucketsClient(sdkmanager);
+
 		const region: GetBucketsRegionEnum = (options.region || GetBucketsRegionEnum.Us) as GetBucketsRegionEnum;
-		cmd === 'ls' && await bucketsClient.ls(region, options);
-		cmd === 'current' && await bucketsClient.current(bucket, options);
+		const credentials: TwoLeggedClient = await TwoLeggedClient.build();
+		if (!credentials || credentials.expired)
+			throw new Error('Requires a valid token!');
+
+		const bucketsClient: BucketsClient = new BucketsClient(sdkmanager);
+		cmd === 'ls' && await bucketsClient.ls(credentials, region, options);
+		cmd === 'current' && await bucketsClient.current(credentials, bucket, options);
 	}
 
-	protected async ls(region: GetBucketsRegionEnum, options: any): Promise<Buckets | undefined> {
+	protected async ls(credentials: TwoLeggedClient, region: GetBucketsRegionEnum, options: any): Promise<Buckets | null> {
 		try {
-			// const limit: number = options.limit || 10;
-			// const startAt: string = options.startAt || null;
-			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 			let buckets: Buckets = {
 				items: [],
-				next: '',
+				next: '', // Sajith - next should be optional (ie:  'next'?: string;)
 			};
 			for (let startAt: string | undefined = undefined; ;) {
-				const results: Buckets | undefined = await this.client?.getBuckets(
-					credentials.access_token as string,
+				const response: Buckets = await this.client.getBuckets(
+					credentials.access_token, // Sajith - needs to be string | () => string
 					{
 						...options,
 						region,
@@ -63,15 +64,15 @@ export class BucketsClient {
 						startAt,
 					}
 				);
-				if (!results || results.items.length === 0)
+				if (!response || response.items.length === 0)
 					break;
-				buckets.items = [...buckets.items, ...results.items];
-				startAt = results.next;
+				buckets.items = [...buckets.items, ...response.items];
+				startAt = response.next;
 				if (!startAt)
 					break;
 			}
-			options.verbose && console.log(JSON.stringify(buckets.items, null, 4));
-			if (!options.verbose) {
+			options.json && console.log(JSON.stringify(buckets.items, null, 4));
+			if (options.text) {
 				const tmp: any[] = buckets.items.map(
 					(elt: BucketsItems): any => ({
 						...elt,
@@ -81,26 +82,24 @@ export class BucketsClient {
 			}
 			return (buckets);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 	}
 
-	protected async current(bucket: string, options: any): Promise<string | undefined> {
+	protected async current(credentials: TwoLeggedClient, bucket: string, options: any): Promise<string | null> {
 		try {
 			let bucketKey: string = await DataMgr.instance.data('bucket') || '';
-			if (bucket !== undefined ) {
+			if (bucket !== undefined) {
 				bucketKey = bucket;
 				await DataMgr.instance.store('bucket', bucket);
 			}
 
-			options.verbose && console.log(JSON.stringify(bucketKey, null, 4));
-			!options.verbose && console.log(`Current Bucket Key: ${bucketKey || '<undefined>'}`);
+			options.json && console.log(JSON.stringify(bucketKey, null, 4));
+			options.text && console.log(`Current Bucket Key: ${bucketKey || '<undefined>'}`);
 
 			return (bucketKey);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 	}
 

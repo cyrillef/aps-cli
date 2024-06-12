@@ -17,9 +17,6 @@
 
 export class URN {
 
-	// protected bucket?: string;
-	// protected key?: string;
-
 	public constructor(protected bucket?: string, protected key?: string) {
 		//return (`urn:adsk.objects:os.object:${bucket}/${key}`);
 	}

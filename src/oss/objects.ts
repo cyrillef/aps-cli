@@ -27,42 +27,42 @@ import AppSettings from '@/app/app-settings';
 import { sdkmanager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
 import { BucketObjects, Buckets, BucketsItems, GetBucketsRegionEnum, ObjectDetails, OssClient } from '@aps_sdk/oss';
-import TLogger from '@/utils/logger';
+import TLogger, { errorMessage } from '@/utils/logger';
 import { assert } from 'console';
+import TwoLeggedClient from '@/oauth/2legged';
 
 export class ObjectsClient {
 
-	private sdkmanager: SdkManager | null = null;
-	private client: OssClient | null = null;
+	private client: OssClient;
 
-	protected constructor(sdkmanager: SdkManager) {
-		this.sdkmanager = sdkmanager;
+	protected constructor(private sdkmanager: SdkManager) {
 		this.client = new OssClient(this.sdkmanager);
 	}
 
 	public static async objects(cmd: string, name: string, options: any): Promise<void> {
 		!options.debug && (sdkmanager.logger = new TLogger());
+
+		const credentials: TwoLeggedClient = await TwoLeggedClient.build();
+		if (!credentials || credentials.expired)
+			throw new Error('Requires a valid token!');
+
 		const bucketsClient: ObjectsClient = new ObjectsClient(sdkmanager);
-		cmd === 'ls' && await bucketsClient.ls(options);
-		cmd === 'current' && await bucketsClient.current(name, options);
-		cmd === 'put-object' && await bucketsClient.putObject(name, options);
-		cmd === 'get-object-details' && await bucketsClient.getObjectDetails(name, options);
+		cmd === 'ls' && await bucketsClient.ls(credentials, options);
+		cmd === 'current' && await bucketsClient.current(credentials, name, options);
+		cmd === 'put-object' && await bucketsClient.putObject(credentials, name, options);
+		cmd === 'get-object-details' && await bucketsClient.getObjectDetails(credentials, name, options);
 	}
 
-	protected async ls(options: any): Promise<BucketObjects | undefined> {
+	protected async ls(credentials: TwoLeggedClient, options: any): Promise<BucketObjects | null> {
 		try {
-			// const limit: number = options.limit || 10;
-			// const startAt: string = options.startAt || null;
-			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket');
 
 			const objectList: BucketObjects = {
-				items: [],
-				next: '',
+				items: [], // Sajith - items should not be optional and use array notation (ie 'items': ObjectDetails[];)
 			};
 			for (let startAt: string | undefined = undefined; ;) {
-				const results: BucketObjects | undefined = await this.client?.getObjects(
-					credentials.access_token as string,
+				const response: BucketObjects = await this.client.getObjects(
+					credentials.access_token, // Sajith - needs to be string | () => string
 					bucketKey,
 					{
 						...options,
@@ -70,18 +70,18 @@ export class ObjectsClient {
 						startAt,
 					}
 				);
-				if (!results || !results.items || results.items?.length === 0)
+				if (!response || !response.items || response.items?.length === 0)
 					break;
-				objectList.items = [...(objectList.items || []), ...results.items];
+				objectList.items = [...(objectList.items || []), ...response.items];
 
-				const url_parts: UrlWithParsedQuery = _url.parse(results.next || '', true);
+				const url_parts: UrlWithParsedQuery = _url.parse(response.next || '', true);
 				startAt = url_parts.query.startAt as string;
 				if (!startAt)
 					break;
 			}
-			options.verbose && console.log(JSON.stringify(objectList.items, null, 4));
-			if (!options.verbose) {
-				const tmp: any[] = (objectList.items || []).map(
+			options.json && console.log(JSON.stringify(objectList.items, null, 4));
+			if (options.text) {
+				const tmp: any[] = (objectList.items || []).map( // Sajith - workaround because it is noted as optional :()
 					(elt: /*ObjectDetails*/any): any => {
 						delete elt.bucketKey;
 						delete elt.objectId;
@@ -95,13 +95,12 @@ export class ObjectsClient {
 			}
 			return (objectList);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 
 	}
 
-	protected async current(name: string, options: any): Promise<string | undefined> {
+	protected async current(credentials: TwoLeggedClient, name: string, options: any): Promise<string | null> {
 		try {
 			let objectKey: string = await DataMgr.instance.data('object-key') || '';
 			if (name !== undefined) {
@@ -109,29 +108,27 @@ export class ObjectsClient {
 				await DataMgr.instance.store('object-key', name);
 			}
 
-			options.verbose && console.log(JSON.stringify(objectKey, null, 4));
-			!options.verbose && console.log(`Current Bucket Key: ${objectKey || '<undefined>'}`);
+			options.json && console.log(JSON.stringify(objectKey, null, 4));
+			options.text && console.log(`Current Bucket Key: ${objectKey || '<undefined>'}`);
 
 			return (objectKey);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 	}
 
-	protected async putObject(name: string, options: any): Promise<ObjectDetails | undefined> {
+	protected async putObject(credentials: TwoLeggedClient, name: string, options: any): Promise<ObjectDetails | null> {
 		try {
-			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket') || '';
 			const filename: string = options.body;
 
 			const progress: cliProgress.SingleBar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
 			options.progress && progress.start(100, 0);
-			const details: ObjectDetails | undefined = await this.client?.upload(
+			const details: ObjectDetails = await this.client.upload(
 				bucketKey,
-				_path.basename(filename),
-				filename,
-				credentials.access_token as string,
+				_path.basename(filename), // Sajith - needs to support Buffer and Streams
+				filename, // Sajith - needs to support Buffer and Streams
+				credentials.access_token, // Sajith - needs to be string | () => string
 				undefined,
 				undefined,
 				undefined,
@@ -144,24 +141,22 @@ export class ObjectsClient {
 			);
 			options.progress && progress.stop();
 
-			options.verbose && console.log(JSON.stringify(details, null, 4));
-			!options.verbose && console.log(`Object loaded: ${details?.objectKey} (${((details?.size || 0) / 1024 / 1024).toFixed(2)} mb)`);
+			options.json && console.log(JSON.stringify(details, null, 4));
+			options.text && console.log(`Object loaded: ${details?.objectKey} (${((details?.size || 0) / 1024 / 1024).toFixed(2)} mb)`);
 
 			return (details);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 	}
 
-	protected async getObjectDetails(name: string, options: any): Promise<ObjectDetails | undefined> {
+	protected async getObjectDetails(credentials: TwoLeggedClient, name: string, options: any): Promise<ObjectDetails | null> {
 		try {
-			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket') || '';
 			const key: string = options.key || await DataMgr.instance.data('object-key') || '';
 
-			const details: ObjectDetails | undefined = await this.client?.getObjectDetails(
-				credentials.access_token as string,
+			const details: ObjectDetails = await this.client.getObjectDetails(
+				credentials.access_token, // Sajith - needs to be string | () => string
 				bucketKey,
 				key,
 				{ // todo
@@ -173,13 +168,12 @@ export class ObjectsClient {
 				}
 			);
 
-			options.verbose && console.log(JSON.stringify(details, null, 4));
-			!options.verbose && console.log(`Object Information: ${details?.objectKey} (${((details?.size || 0) / 1024 / 1024).toFixed(2)} mb) (sha1: ${details?.sha1})`);
+			options.json && console.log(JSON.stringify(details, null, 4));
+			options.text && console.log(`Object Information: ${details?.objectKey} (${((details?.size || 0) / 1024 / 1024).toFixed(2)} mb) (sha1: ${details?.sha1})`);
 
 			return (details);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 	}
 

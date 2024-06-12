@@ -16,41 +16,41 @@
 //
 
 import _path from 'path';
-import _url, { UrlWithParsedQuery } from 'url';
-import moment from 'moment';
-import cliProgress from 'cli-progress';
+import _url from 'url';
 
-import { ApiResponse, SdkManager, SdkManagerBuilder } from '@aps_sdk/autodesk-sdkmanager'
-import { AuthenticationClient, ResponseType, Scopes, TokenTypeHint, TwoLeggedToken } from '@aps_sdk/authentication';
+import { SdkManager } from '@aps_sdk/autodesk-sdkmanager'
+import { TwoLeggedToken } from '@aps_sdk/authentication';
 
-import AppSettings from '@/app/app-settings';
 import { sdkmanager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
-import { BucketObjects, Buckets, BucketsItems, GetBucketsRegionEnum, ObjectDetails, OssClient } from '@aps_sdk/oss';
-import TLogger from '@/utils/logger';
-import { assert } from 'console';
-import { Manifest, ModelDerivativeClient, References, ReferencesPayload, SpecifyReferences } from '@aps_sdk/model-derivative';
-import URN from './urn';
+import { GetBucketsRegionEnum } from '@aps_sdk/oss';
+import TLogger, { errorMessage } from '@/utils/logger';
+import { ExtractorVersion, Job, JobPayload, JobSvf2OutputFormat, JobSvf2OutputFormatAdvancedRVT, JobSvfOutputFormat, Manifest, ManifestDerivatives, ManifestDerivativesChildren, Model2dView, ModelDerivativeClient, References, ReferencesPayload, SpecifyReferences, Type, View, XAdsDerivativeFormat } from '@aps_sdk/model-derivative';
+import URN from '@/md/urn';
+import TwoLeggedClient from '@/oauth/2legged';
 
 export class ModelDerivativesClient {
 
-	private sdkmanager: SdkManager | null = null;
-	private client: ModelDerivativeClient | null = null;
+	private client: ModelDerivativeClient;
 
-	protected constructor(sdkmanager: SdkManager) {
-		this.sdkmanager = sdkmanager;
+	protected constructor(private sdkmanager: SdkManager) {
 		this.client = new ModelDerivativeClient(this.sdkmanager);
 	}
 
 	public static async derivatives(cmd: string, options: any): Promise<void> {
 		!options.debug && (sdkmanager.logger = new TLogger());
+
+		const credentials: TwoLeggedClient = await TwoLeggedClient.build();
+		if (!credentials || credentials.expired)
+			throw new Error('Requires a valid token!');
+
 		const mdClient: ModelDerivativesClient = new ModelDerivativesClient(sdkmanager);
-		cmd === 'manifest' && await mdClient.manifest(options);
-		cmd === 'set-references' && await mdClient.setReferences(options);
+		cmd === 'manifest' && await mdClient.manifest(credentials, options);
+		cmd === 'set-references' && await mdClient.setReferences(credentials, options);
+		cmd === 'invoke' && await mdClient.invoke(credentials, options);
 	}
 
 	protected async decodeOptions(options: any): Promise<any> {
-		const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 		let urn: string = options.urn || await DataMgr.instance.data('urn') || '';
 		const region: GetBucketsRegionEnum = (options.region || GetBucketsRegionEnum.Us) as GetBucketsRegionEnum;
 		if (!options.urn) {
@@ -62,45 +62,56 @@ export class ModelDerivativesClient {
 		if (!urn)
 			throw new Error('urn|bucket|key parameters not set!')
 		return ({
-			credentials,
 			region,
 			urn,
 		});
 	}
 
-	protected async manifest(options: any): Promise<Manifest | undefined> {
+	protected async manifest(credentials: TwoLeggedClient, options: any): Promise<Manifest | null> {
 		try {
-			const { credentials, region, urn }: { credentials: TwoLeggedToken, region: GetBucketsRegionEnum, urn: string }
+			const { region, urn }: { region: GetBucketsRegionEnum, urn: string }
 				= await this.decodeOptions(options);
 
-			const result: Manifest | undefined = await this.client?.getManifest(
-				credentials.access_token as string,
+			const response: Manifest = await this.client.getManifest(
+				credentials.access_token, // Sajith - needs to be string | () => string
 				urn,
 				{ region }
 			);
 
-			options.verbose && console.log(JSON.stringify(result, null, 4));
-			//!options.verbose && console.log(``);
+			options.json && console.log(JSON.stringify(response, null, 4));
+			if (options.text) {
+				console.log(`Status: ${response?.status} [${response?.progress}]`);
+				response?.derivatives.map((derivative: ManifestDerivatives, index: number): void => {
+					console.log(`${index} - ${derivative.name} <${derivative.outputType}>: Status: ${derivative?.status} [${derivative?.progress}]`);
 
-			return (result);
+					derivative?.children?.map((child: ManifestDerivativesChildren): void => {
+						console.log(`   > ${child.role} - ${child.name || ''} <${child.guid}>: Status: ${child?.status} [${child?.progress || 'complete'}]`);
+
+						[...child?.children || []].map((subchild: ManifestDerivativesChildren): void => {
+							console.log(`     * ${subchild.type} - ${subchild.role} <${subchild.guid}>: ${(subchild as any)?.urn || ''}`); // Sajith - missing optional property 'urn' on ManifestDerivativesChildren
+						});
+					});
+				});
+			}
+
+			return (response);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
 		}
 	}
 
-	protected async setReferences(options: any): Promise<SpecifyReferences | undefined> {
+	protected async setReferences(credentials: TwoLeggedClient, options: any): Promise<SpecifyReferences | null> {
 		try {
-			const { credentials, region, urn }: { credentials: TwoLeggedToken, region: GetBucketsRegionEnum, urn: string }
+			const { region, urn }: { region: GetBucketsRegionEnum, urn: string }
 				= await this.decodeOptions(options);
 			const references: string = options.references || '';
 			if (!references)
 				throw new Error('references parameter not set!');
 			const specifyReferences: ReferencesPayload = {
 				urn: URN.toString(urn),
-				fileName: _path.basename(URN.toString(urn)),
+				//fileName: _path.basename(URN.toString(urn)),
 				references: new Set<References>(),
-			};
+			} as ReferencesPayload;
 			let json: any = {};
 			try {
 				json = JSON.parse(references);
@@ -110,28 +121,64 @@ export class ModelDerivativesClient {
 					const ref: string[] = item.split('|');
 					const reference: References = {
 						urn: URN.build(ref[0].split(':')[0], ref[0].split(':')[1]).urn,
-						relativePath: ref[1],
-						fileName: ref[1],
-					};
+						//relativePath: ref[1],
+						//fileName: ref[1],
+					} as References;
 					specifyReferences.references.add(reference);
-					specifyReferences.references = specifyReferences.references.
 				});
+				specifyReferences.references = [...specifyReferences.references.values()] as any as Set<References>;
 			}
 
-			const result: SpecifyReferences | undefined = await this.client?.specifyReferences(
-				credentials.access_token as string,
+			const response: SpecifyReferences = await this.client.specifyReferences(
+				credentials.access_token, // Sajith - needs to be string | () => string
 				urn,
 				specifyReferences,
 				{ region }
 			);
 
-			options.verbose && console.log(JSON.stringify(result, null, 4));
-			//!options.verbose && console.log(``);
+			options.json && console.log(JSON.stringify(response, null, 4));
+			options.text && console.log(response?.result || '<unknown>');
 
-			return (result);
+			return (response);
 		} catch (error: any) {
-			console.error(error.message);
-			return (undefined);
+			return (errorMessage(error, options));
+		}
+	}
+
+	protected async invoke(credentials: TwoLeggedClient, options: any): Promise<Job | null> {
+		try {
+			const { region, urn }: { region: GetBucketsRegionEnum, urn: string }
+				= await this.decodeOptions(options);
+			const xAdsForce: boolean = options.force;
+			const xAdsDerivativeFormat: XAdsDerivativeFormat | undefined = undefined;
+
+			const svf2OutputFormat: JobSvf2OutputFormat = {
+				views: [View._2d, View._3d],
+				type: Type.Svf2,
+				// optional advanced options
+				//advanced: <JobSvf2OutputFormatAdvancedRVT>{ _2dviews: Model2dView.Legacy, generateMasterViews: true, extractorVersion: ExtractorVersion.Next }
+			};
+
+			const job: JobPayload = {
+				input: { urn, },
+				output: {
+					// JobPayloadFormat: JobPayloadFormat = JobDwgOutputFormat | JobIfcOutputFormat | JobIgesOutputFormat | JobObjOutputFormat | JobStepOutputFormat | JobStlOutputFormat | JobSvf2OutputFormat | JobSvfOutputFormat | JobThumbnailOutputFormat
+					formats: [svf2OutputFormat]
+				},
+			};
+
+			const response: Job = await this.client.startJob(
+				credentials.access_token, // Sajith - needs to be string | () => string
+				job,
+				{ region, xAdsForce, xAdsDerivativeFormat }
+			);
+
+			options.json && console.log(JSON.stringify(response, null, 4));
+			options.text && console.log(response?.result || '<unknown>');
+
+			return (response);
+		} catch (error: any) {
+			return (errorMessage(error, options));
 		}
 	}
 

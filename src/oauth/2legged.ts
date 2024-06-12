@@ -26,7 +26,7 @@ import { AuthenticationClient, ResponseType, Scopes, TokenTypeHint, TwoLeggedTok
 import AppSettings from '@/app/app-settings';
 import { sdkmanager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
-import TLogger from '@/utils/logger';
+import TLogger, { errorMessage } from '@/utils/logger';
 
 export class SimplifiedScopes {
 
@@ -64,22 +64,30 @@ export class SimplifiedScopes {
 
 export class TwoLeggedClient {
 
-	private sdkmanager: SdkManager | null = null;
-	private authenticationClient: AuthenticationClient | null = null;
+	private authenticationClient: AuthenticationClient;
 	private autoRefresh: NodeJS.Timeout | null = null;
 	private _token: TwoLeggedToken | null = null;
 	private _scopes: Scopes[] = [Scopes.ViewablesRead];
 
-	protected constructor(sdkmanager: SdkManager) {
-		this.sdkmanager = sdkmanager;
+	protected constructor(private sdkmanager: SdkManager) {
 		this.authenticationClient = new AuthenticationClient(this.sdkmanager);
 	}
 
+	// Sajith - TwoLeggedToken has all its properties optionals - that is incorrect
+	// and it would be nice to add a expires_at?: number; optional properties calculated automatically
 	public get token(): TwoLeggedToken | null { return (this._token); }
-	protected set token(token: TwoLeggedToken) { this._token = token; }
+	protected set token(token: TwoLeggedToken | null) { this._token = token; }
 
+	public get expired(): boolean { return (!this.token || moment().isAfter(moment((this.token as any).expires_at * 1000))); }
+	public get access_token(): string {
+		if (this.token && moment().isBefore(moment((this.token as any).expires_at * 1000)))
+			return (this.token.access_token as string);
+		throw new Error('Requires a valid token!');
+	}
+
+	// Sajith - I add to create my own auto-refresh logic
 	protected async generateToken(scopes: Scopes[] = [Scopes.DataRead], autoRefresh: boolean = true): Promise<TwoLeggedToken> {
-		const token: TwoLeggedToken | undefined = await this.authenticationClient?.getTwoLeggedToken(
+		const token: TwoLeggedToken | undefined = await this.authenticationClient.getTwoLeggedToken(
 			AppSettings.apsClientId,
 			AppSettings.apsClientSecret,
 			scopes
@@ -103,9 +111,17 @@ export class TwoLeggedClient {
 		return (JSON.stringify(this.token, null, 4));
 	}
 
+	public static async build(): Promise<TwoLeggedClient> {
+		const twoLeggedClient: TwoLeggedClient = new TwoLeggedClient(sdkmanager);
+		twoLeggedClient.token = await DataMgr.instance.data('2legged');
+		// if ( twoLeggedClient.expired)
+		// 	await twoLeggedClient.generateToken();
+		return (twoLeggedClient);
+	}
+
 	public static async twoLegged(cmd: string, scopes: string, options: any): Promise<void> {
 		!options.debug && (sdkmanager.logger = new TLogger());
-		const twoLeggedClient: TwoLeggedClient = new TwoLeggedClient(sdkmanager);
+		const twoLeggedClient: TwoLeggedClient = await TwoLeggedClient.build();
 		if (!scopes && !['token', 'decode', 'verify'].includes(cmd)) {
 			scopes = cmd;
 			cmd = 'token';
@@ -115,12 +131,17 @@ export class TwoLeggedClient {
 		cmd === 'verify' && await twoLeggedClient.verify(options);
 	}
 
-	protected async getToken(scopes: string, options: any): Promise<TwoLeggedToken> {
-		let _scopes: Scopes[] = SimplifiedScopes.string2Scopes(scopes);
-		const credentials: TwoLeggedToken = await this.generateToken(_scopes, false);
-		options.verbose && console.log(this.toString());
-		!options.verbose && console.log(`Token will expire at: ${moment(1000 * (credentials as any).expires_at).format('dddd, MMMM Do YYYY, h:mm:ss a')}`);
-		return (credentials);
+	protected async getToken(scopes: string, options: any): Promise<TwoLeggedToken | null> {
+		try {
+			let _scopes: Scopes[] = SimplifiedScopes.string2Scopes(scopes);
+			const credentials: TwoLeggedToken = await this.generateToken(_scopes, false);
+			options.json && console.log(this.toString());
+			options.text && console.log(`Token will expire at: ${moment(1000 * (credentials as any).expires_at).format('dddd, MMMM Do YYYY, h:mm:ss a')}`);
+			return (credentials);
+		} catch (error: any) {
+			this.token = null;
+			return (errorMessage(error, options));
+		}
 	}
 
 	protected async decode(options: any, silent: boolean = false): Promise<jwt.Jwt | null> {
@@ -128,10 +149,10 @@ export class TwoLeggedClient {
 			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 			const decoded: jwt.Jwt | null = jwt.decode(credentials.access_token as string, { complete: true });
 
-			options.verbose && !silent && console.log(JSON.stringify(decoded, null, 4));
-			if (!options.verbose && !silent) {
+			options.json && !silent && console.log(JSON.stringify(decoded, null, 4));
+			if (options.text && !silent) {
 				console.log('Token');
-				if (typeof decoded === 'string')
+				if (!decoded || typeof decoded === 'string')
 					console.log(`\t- ${decoded}`);
 				else if (decoded?.payload && typeof decoded?.payload === 'string') {
 					console.log(`\t- ${decoded?.payload}`);
@@ -142,65 +163,69 @@ export class TwoLeggedClient {
 			}
 			return (decoded);
 		} catch (error: any) {
-			return (null);
+			return (errorMessage(error, options));
 		}
 	}
 
-	protected async verify(options: any): Promise<void> {
+	protected async verify(options: any): Promise<jwt.Jwt | null> {
 		try {
-			options.verbose && console.log('Verifying JWT token');
 			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
 			const decoded: jwt.Jwt | null = jwt.decode(credentials.access_token as string, { complete: true });
-			//console.log(`decoded ${JSON.stringify(decoded, null, 4)}`);
+
 			const header: jwt.JwtHeader | undefined = decoded?.header;
 
-			const _verify: any = (access_token: string, header: jwt.JwtHeader | undefined) => {
-				return (new Promise((resolve: (value: Jwt | JwtPayload | string) => void, reject: (reason?: any) => void): void => {
+			const _verify: (access_token: string, header: jwt.JwtHeader | undefined) => Promise<Jwt | undefined>
+				= (access_token: string, header: jwt.JwtHeader | undefined): Promise<Jwt | undefined> => {
+					return (new Promise((resolve: (value: Jwt | undefined) => void, reject: (reason?: any) => void): void => {
 
-					const getKey: GetPublicKeyOrSecret = (header: JwtHeader, callback: SigningKeyCallback): void => {
-						const well_known_jwks_url = 'https://developer.api.autodesk.com/authentication/v2/keys';
-						const client = jwksClient({ jwksUri: well_known_jwks_url });
-						client.getSigningKey(header?.kid, (err: Error | null, key?: jwksClient.SigningKey | undefined): void => {
-							const signingKey: string | undefined = key?.getPublicKey();
-							//console.log(`signingKey ${signingKey}`);
-							callback(null, signingKey);
-						});
-					};
+						const getKey: GetPublicKeyOrSecret = (header: JwtHeader, callback: SigningKeyCallback): void => {
+							const well_known_jwks_url = 'https://developer.api.autodesk.com/authentication/v2/keys';
+							const client = jwksClient({ jwksUri: well_known_jwks_url });
+							client.getSigningKey(header?.kid, (err: Error | null, key?: jwksClient.SigningKey | undefined): void => {
+								const signingKey: string | undefined = key?.getPublicKey();
+								//console.log(`signingKey ${signingKey}`);
+								callback(null, signingKey);
+							});
+						};
 
-					jwt.verify(
-						access_token,
-						getKey,
-						{
-							algorithms: ['RS256'],
-							complete: true,
-							...header
-						},
-						(error: VerifyErrors | null, fullyDecoded: Jwt | JwtPayload | string | undefined): void => {
-							// This will display the decoded JWT token.
-							//console.log(`fullyDecoded ${JSON.stringify(fullyDecoded, null, 4)}`);
-							if (typeof fullyDecoded !== 'undefined' && fullyDecoded) {
-								// console.log('Valid token');
-								// console.log(JSON.stringify(fullyDecoded, null, 4));
-								resolve(fullyDecoded);
-							} else {
-								//console.error('Invalid token');
-								reject();
+						jwt.verify(
+							access_token,
+							getKey,
+							{
+								algorithms: ['RS256'],
+								complete: true,
+								...header
+							},
+							(error: VerifyErrors | null, fullyDecoded: Jwt | JwtPayload | string | undefined): void => {
+								// This will display the decoded JWT token.
+								//console.log(`fullyDecoded ${JSON.stringify(fullyDecoded, null, 4)}`);
+								if (typeof fullyDecoded !== 'undefined' && fullyDecoded) {
+									// console.log('Valid token');
+									// console.log(JSON.stringify(fullyDecoded, null, 4));
+									resolve(fullyDecoded as Jwt);
+								} else {
+									//console.error('Invalid token');
+									reject();
+								}
 							}
-						}
-					);
-				}));
-			};
+						);
 
-			const results = await _verify(credentials.access_token as string, header);
+					}));
+				};
 
-			options.verbose && console.log(JSON.stringify(results, null, 4));
-			if (!options.verbose) {
+			const results: Jwt | undefined = await _verify(credentials.access_token as string, header);
+
+			options.json && console.log(JSON.stringify(results, null, 4));
+			if (options.text) {
 				console.log('Valid token');
-				console.log(`\tClient ID: ${results.payload.client_id}`);
-				console.log(`\tScopes: ${results.payload.scope.join(' ')}`);
+				console.log(`\tClient ID: ${(results?.payload as any).client_id}`);
+				console.log(`\tScopes: ${(results?.payload as any).scope.join(' ')}`);
 			}
+
+			return (decoded);
 		} catch (error: any) {
 			console.log('Invalid token');
+			return (null);
 		}
 	}
 
