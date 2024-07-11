@@ -1,0 +1,27 @@
+{
+	"extends": "./tsconfig-base.json",
+	"ts-node": {
+		"require": ["tsconfig-paths/register"]
+	},
+	"compilerOptions": {
+		"module": "CommonJS",
+		"outDir": "../bin",
+		"baseUrl": ".",
+		"rootDir": ".",
+		"esModuleInterop": true,
+
+		"paths": {
+			"@/*": ["*"],
+			"@/app/*": ["*"],
+			"@/oauth/*": ["oauth/*"]
+		},
+	},
+	"include": [
+		"**/*.ts"
+	],
+	"exclude": [
+		"**/node_modules/*",
+		"bin",
+		"public"
+	]
+}

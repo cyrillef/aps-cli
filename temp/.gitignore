@@ -1,0 +1,7 @@
+*
+
+!logs/
+!out/
+!uploads/
+
+!.gitignore
