@@ -20,7 +20,8 @@ import {Scopes } from '@aps_sdk/authentication';
 export class SimplifiedScopes {
 
 	public static all: { [index: string]: Scopes[] } = {
-		r: [Scopes.DataRead, Scopes.DataSearch, Scopes.ViewablesRead],
+		v: [Scopes.ViewablesRead],
+		r: [Scopes.DataRead, Scopes.DataSearch],
 		w: [Scopes.DataWrite, Scopes.DataCreate],
 		u: [Scopes.DataReadUrnOfResource],
 		br: [Scopes.BucketRead],

@@ -24,45 +24,48 @@ import { ApiResponse, SdkManager, SdkManagerBuilder } from '@aps_sdk/autodesk-sd
 import { AuthenticationClient, ResponseType, Scopes, TokenTypeHint, TwoLeggedToken } from '@aps_sdk/authentication';
 
 import AppSettings from '@/app/app-settings';
-import { sdkmanager } from '@/aps';
+import { sdkManager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
-import { BucketObjects, Buckets, BucketsItems, GetBucketsRegionEnum, ObjectDetails, OssClient } from '@aps_sdk/oss';
+import { BucketObjects, Buckets, BucketsItems, ObjectDetails, OssClient } from '@aps_sdk/oss';
 import TLogger, { errorMessage } from '@/utils/logger';
 import { assert } from 'console';
 import TwoLeggedClient from '@/oauth/2legged';
+import AuthenticationProvider from '@/oauth/oauth-provider';
+import ThreeLeggedClient from '@/oauth/3legged';
 
 export class ObjectsClient {
 
 	private client: OssClient;
 
-	protected constructor(private sdkmanager: SdkManager) {
-		this.client = new OssClient(this.sdkmanager);
+	protected constructor(private sdkManager: SdkManager, authenticationProvider: AuthenticationProvider) {
+		this.client = new OssClient({
+			sdkManager,
+			authenticationProvider,
+		});
 	}
 
 	public static async objects(cmd: string, name: string, options: any): Promise<void> {
-		!options.debug && (sdkmanager.logger = new TLogger());
+		!options.debug && (sdkManager.logger = new TLogger());
 
-		const credentials: TwoLeggedClient = await TwoLeggedClient.build();
-		if (!credentials || credentials.expired)
-			throw new Error('Requires a valid token!');
+		const storageKey: string | undefined = options.credentials;
+		const authenticationProvider: AuthenticationProvider = await AuthenticationProvider.build(storageKey);
 
-		const bucketsClient: ObjectsClient = new ObjectsClient(sdkmanager);
-		cmd === 'ls' && await bucketsClient.ls(credentials, options);
-		cmd === 'current' && await bucketsClient.current(credentials, name, options);
-		cmd === 'put-object' && await bucketsClient.putObject(credentials, name, options);
-		cmd === 'get-object-details' && await bucketsClient.getObjectDetails(credentials, name, options);
+		const objectsClient: ObjectsClient = new ObjectsClient(sdkManager, authenticationProvider);
+		cmd === 'ls' && await objectsClient.ls(options);
+		cmd === 'current' && await objectsClient.current(name, options);
+		cmd === 'put-object' && await objectsClient.putObject(name, options);
+		cmd === 'get-object-details' && await objectsClient.getObjectDetails(name, options);
 	}
 
-	protected async ls(credentials: TwoLeggedClient, options: any): Promise<BucketObjects | null> {
+	protected async ls(options: any): Promise<BucketObjects | null> {
 		try {
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket');
 
-			const objectList: BucketObjects = {
-				items: [], // Sajith - items should not be optional and use array notation (ie 'items': ObjectDetails[];)
+			const objectList: BucketObjects = { // Sajith - It is strange to use BucketObjects here
+				items: [],
 			};
 			for (let startAt: string | undefined = undefined; ;) {
 				const response: BucketObjects = await this.client.getObjects(
-					credentials.access_token, // Sajith - needs to be string | () => string
 					bucketKey,
 					{
 						...options,
@@ -100,7 +103,7 @@ export class ObjectsClient {
 
 	}
 
-	protected async current(credentials: TwoLeggedClient, name: string, options: any): Promise<string | null> {
+	protected async current(name: string, options: any): Promise<string | null> {
 		try {
 			let objectKey: string = await DataMgr.instance.data('object-key') || '';
 			if (name !== undefined) {
@@ -109,7 +112,7 @@ export class ObjectsClient {
 			}
 
 			options.json && console.log(JSON.stringify(objectKey, null, 4));
-			options.text && console.log(`Current Bucket Key: ${objectKey || '<undefined>'}`);
+			options.text && console.log(`Current Object Key: ${objectKey || '<undefined>'}`);
 
 			return (objectKey);
 		} catch (error: any) {
@@ -117,21 +120,20 @@ export class ObjectsClient {
 		}
 	}
 
-	protected async putObject(credentials: TwoLeggedClient, name: string, options: any): Promise<ObjectDetails | null> {
+	protected async putObject(name: string, options: any): Promise<ObjectDetails | null> {
 		try {
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket') || '';
+			await DataMgr.instance.store('bucket', bucketKey);
 			const filename: string = options.body;
+			const objectKey: string = name || _path.basename(filename);
+			await DataMgr.instance.store('object-key', objectKey);
 
 			const progress: cliProgress.SingleBar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
 			options.progress && progress.start(100, 0);
-			const details: ObjectDetails = await this.client.upload(
+			const details: ObjectDetails = await this.client.uploadObject(
 				bucketKey,
-				_path.basename(filename), // Sajith - needs to support Buffer and Streams
-				filename, // Sajith - needs to support Buffer and Streams
-				credentials.access_token, // Sajith - needs to be string | () => string
-				undefined,
-				undefined,
-				undefined,
+				objectKey,
+				filename,
 				{
 					onProgress: (percentCompleted: number): void => {
 						//console.log(percentCompleted);
@@ -150,15 +152,14 @@ export class ObjectsClient {
 		}
 	}
 
-	protected async getObjectDetails(credentials: TwoLeggedClient, name: string, options: any): Promise<ObjectDetails | null> {
+	protected async getObjectDetails(name: string, options: any): Promise<ObjectDetails | null> {
 		try {
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket') || '';
-			const key: string = options.key || await DataMgr.instance.data('object-key') || '';
+			const objectKey: string = name || await DataMgr.instance.data('object-key') || '';
 
 			const details: ObjectDetails = await this.client.getObjectDetails(
-				credentials.access_token, // Sajith - needs to be string | () => string
 				bucketKey,
-				key,
+				objectKey,
 				{ // todo
 					// ifModifiedSince?: string | undefined;
 					// xAdsAcmNamespace?: string | undefined;

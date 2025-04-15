@@ -18,41 +18,48 @@
 import _path from 'path';
 import _url from 'url';
 
-import { SdkManager } from '@aps_sdk/autodesk-sdkmanager'
+import { SdkManager, StaticAuthenticationProvider } from '@aps_sdk/autodesk-sdkmanager'
 import { TwoLeggedToken } from '@aps_sdk/authentication';
 
-import { sdkmanager } from '@/aps';
+import { sdkManager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
-import { GetBucketsRegionEnum } from '@aps_sdk/oss';
+import { Region } from '@aps_sdk/oss';
 import TLogger, { errorMessage } from '@/utils/logger';
-import { ExtractorVersion, Job, JobPayload, JobSvf2OutputFormat, JobSvf2OutputFormatAdvancedRVT, JobSvfOutputFormat, Manifest, ManifestDerivatives, ManifestDerivativesChildren, Model2dView, ModelDerivativeClient, References, ReferencesPayload, SpecifyReferences, Type, View, XAdsDerivativeFormat } from '@aps_sdk/model-derivative';
+import {
+	Job, JobPayload, JobPayloadFormat, Manifest, ManifestDerivative, ManifestResources,
+	ModelDerivativeClient, OutputType, SpecifyReferences, SpecifyReferencesPayload,
+	SpecifyReferencesPayloadReferences, View, XAdsDerivativeFormat
+} from '@aps_sdk/model-derivative';
 import URN from '@/md/urn';
 import TwoLeggedClient from '@/oauth/2legged';
+import AuthenticationProvider from '@/oauth/oauth-provider';
 
 export class ModelDerivativesClient {
 
 	private client: ModelDerivativeClient;
 
-	protected constructor(private sdkmanager: SdkManager) {
-		this.client = new ModelDerivativeClient(this.sdkmanager);
+	protected constructor(private sdkManager: SdkManager, authenticationProvider: AuthenticationProvider) {
+		this.client = new ModelDerivativeClient({
+			sdkManager,
+			authenticationProvider,
+		});
 	}
 
 	public static async derivatives(cmd: string, options: any): Promise<void> {
-		!options.debug && (sdkmanager.logger = new TLogger());
+		!options.debug && (sdkManager.logger = new TLogger());
 
-		const credentials: TwoLeggedClient = await TwoLeggedClient.build();
-		if (!credentials || credentials.expired)
-			throw new Error('Requires a valid token!');
+		const storageKey: string | undefined = options.credentials;
+		const authenticationProvider: AuthenticationProvider = await AuthenticationProvider.build(storageKey);
 
-		const mdClient: ModelDerivativesClient = new ModelDerivativesClient(sdkmanager);
-		cmd === 'manifest' && await mdClient.manifest(credentials, options);
-		cmd === 'set-references' && await mdClient.setReferences(credentials, options);
-		cmd === 'invoke' && await mdClient.invoke(credentials, options);
+		const mdClient: ModelDerivativesClient = new ModelDerivativesClient(sdkManager, authenticationProvider);
+		cmd === 'manifest' && await mdClient.manifest(options);
+		cmd === 'set-references' && await mdClient.setReferences(options);
+		cmd === 'invoke' && await mdClient.invoke(options);
 	}
 
 	protected async decodeOptions(options: any): Promise<any> {
 		let urn: string = options.urn || await DataMgr.instance.data('urn') || '';
-		const region: GetBucketsRegionEnum = (options.region || GetBucketsRegionEnum.Us) as GetBucketsRegionEnum;
+		const region: Region = (options.region || Region.Us) as Region;
 		if (!options.urn) {
 			const bucketKey: string = options.bucket || await DataMgr.instance.data('bucket') || '';
 			const key: string = options.key || await DataMgr.instance.data('object-key') || '';
@@ -67,27 +74,26 @@ export class ModelDerivativesClient {
 		});
 	}
 
-	protected async manifest(credentials: TwoLeggedClient, options: any): Promise<Manifest | null> {
+	protected async manifest(options: any): Promise<Manifest | null> {
 		try {
-			const { region, urn }: { region: GetBucketsRegionEnum, urn: string }
+			const { region, urn }: { region: Region, urn: string }
 				= await this.decodeOptions(options);
 
 			const response: Manifest = await this.client.getManifest(
-				credentials.access_token, // Sajith - needs to be string | () => string
 				urn,
-				{ region }
+				{ region, }
 			);
 
 			options.json && console.log(JSON.stringify(response, null, 4));
 			if (options.text) {
 				console.log(`Status: ${response?.status} [${response?.progress}]`);
-				response?.derivatives.map((derivative: ManifestDerivatives, index: number): void => {
+				response?.derivatives.map((derivative: ManifestDerivative, index: number): void => {
 					console.log(`${index} - ${derivative.name} <${derivative.outputType}>: Status: ${derivative?.status} [${derivative?.progress}]`);
 
-					derivative?.children?.map((child: ManifestDerivativesChildren): void => {
+					derivative?.children?.map((child: ManifestResources): void => {
 						console.log(`   > ${child.role} - ${child.name || ''} <${child.guid}>: Status: ${child?.status} [${child?.progress || 'complete'}]`);
 
-						[...child?.children || []].map((subchild: ManifestDerivativesChildren): void => {
+						[...child?.children || []].map((subchild: ManifestResources): void => {
 							console.log(`     * ${subchild.type} - ${subchild.role} <${subchild.guid}>: ${(subchild as any)?.urn || ''}`); // Sajith - missing optional property 'urn' on ManifestDerivativesChildren
 						});
 					});
@@ -100,18 +106,18 @@ export class ModelDerivativesClient {
 		}
 	}
 
-	protected async setReferences(credentials: TwoLeggedClient, options: any): Promise<SpecifyReferences | null> {
+	protected async setReferences(options: any): Promise<SpecifyReferences | null> {
 		try {
-			const { region, urn }: { region: GetBucketsRegionEnum, urn: string }
+			const { region, urn }: { region: Region, urn: string }
 				= await this.decodeOptions(options);
 			const references: string = options.references || '';
 			if (!references)
 				throw new Error('references parameter not set!');
-			const specifyReferences: ReferencesPayload = {
+			const specifyReferences: SpecifyReferencesPayload = {
 				urn: URN.toString(urn),
 				//fileName: _path.basename(URN.toString(urn)),
-				references: new Set<References>(),
-			} as ReferencesPayload;
+				references: []
+			} as SpecifyReferencesPayload;
 			let json: any = {};
 			try {
 				json = JSON.parse(references);
@@ -119,21 +125,19 @@ export class ModelDerivativesClient {
 			} catch (ex: any) {
 				references.split(',').map((item: string): void => {
 					const ref: string[] = item.split('|');
-					const reference: References = {
+					const reference: SpecifyReferencesPayloadReferences = {
 						urn: URN.build(ref[0].split(':')[0], ref[0].split(':')[1]).urn,
 						//relativePath: ref[1],
 						//fileName: ref[1],
-					} as References;
-					specifyReferences.references.add(reference);
+					} as SpecifyReferencesPayloadReferences;
+					specifyReferences.references.push(reference);
 				});
-				specifyReferences.references = [...specifyReferences.references.values()] as any as Set<References>;
 			}
 
 			const response: SpecifyReferences = await this.client.specifyReferences(
-				credentials.access_token, // Sajith - needs to be string | () => string
 				urn,
 				specifyReferences,
-				{ region }
+				{ region, }
 			);
 
 			options.json && console.log(JSON.stringify(response, null, 4));
@@ -145,18 +149,18 @@ export class ModelDerivativesClient {
 		}
 	}
 
-	protected async invoke(credentials: TwoLeggedClient, options: any): Promise<Job | null> {
+	protected async invoke(options: any): Promise<Job | null> {
 		try {
-			const { region, urn }: { region: GetBucketsRegionEnum, urn: string }
+			const { region, urn }: { region: Region, urn: string }
 				= await this.decodeOptions(options);
 			const xAdsForce: boolean = options.force;
 			const xAdsDerivativeFormat: XAdsDerivativeFormat | undefined = undefined;
 			const checkReferences: boolean = options.checkReferences;
 			const master: string = options.master;
 
-			const svf2OutputFormat: JobSvf2OutputFormat = {
+			const svf2OutputFormat: JobPayloadFormat = {
 				views: [View._2d, View._3d],
-				type: Type.Svf2,
+				type: OutputType.Svf2,
 				// optional advanced options
 				//advanced: <JobSvf2OutputFormatAdvancedRVT>{ _2dviews: Model2dView.Legacy, generateMasterViews: true, extractorVersion: ExtractorVersion.Next }
 			};
@@ -178,9 +182,8 @@ export class ModelDerivativesClient {
 			console.log(JSON.stringify(job, null, 4))
 
 			const response: Job = await this.client.startJob(
-				credentials.access_token, // Sajith - needs to be string | () => string
 				job,
-				{ region, xAdsForce, xAdsDerivativeFormat }
+				{ region, xAdsForce, xAdsDerivativeFormat, }
 			);
 
 			options.json && console.log(JSON.stringify(response, null, 4));

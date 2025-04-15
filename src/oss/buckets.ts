@@ -21,34 +21,36 @@ import { ApiResponse, SdkManager, SdkManagerBuilder } from '@aps_sdk/autodesk-sd
 import { AuthenticationClient, ResponseType, Scopes, TokenTypeHint, TwoLeggedToken } from '@aps_sdk/authentication';
 
 import AppSettings from '@/app/app-settings';
-import { sdkmanager } from '@/aps';
+import { sdkManager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
-import { Buckets, BucketsItems, GetBucketsRegionEnum, OssClient } from '@aps_sdk/oss';
+import { Buckets, BucketsItems, Region, OssClient } from '@aps_sdk/oss';
 import TLogger, { errorMessage } from '@/utils/logger';
 import TwoLeggedClient from '@/oauth/2legged';
+import AuthenticationProvider from '@/oauth/oauth-provider';
 
 export class BucketsClient {
 
 	private client: OssClient;
 
-	protected constructor(private sdkmanager: SdkManager) {
-		this.client = new OssClient(this.sdkmanager);
+	protected constructor(private sdkManager: SdkManager, authenticationProvider: AuthenticationProvider) {
+		this.client = new OssClient({
+			sdkManager,
+			authenticationProvider,
+		});
 	}
 
 	public static async buckets(cmd: string, bucket: string, options: any): Promise<void> {
-		!options.debug && (sdkmanager.logger = new TLogger());
+		!options.debug && (sdkManager.logger = new TLogger());
 
-		const region: GetBucketsRegionEnum = (options.region || GetBucketsRegionEnum.Us) as GetBucketsRegionEnum;
-		const credentials: TwoLeggedClient = await TwoLeggedClient.build();
-		if (!credentials || credentials.expired)
-			throw new Error('Requires a valid token!');
+		const region: Region = (options.region || Region.Us) as Region;
+		const authenticationProvider: AuthenticationProvider = await AuthenticationProvider.build(TwoLeggedClient.StorageKey);
 
-		const bucketsClient: BucketsClient = new BucketsClient(sdkmanager);
-		cmd === 'ls' && await bucketsClient.ls(credentials, region, options);
-		cmd === 'current' && await bucketsClient.current(credentials, bucket, options);
+		const bucketsClient: BucketsClient = new BucketsClient(sdkManager, authenticationProvider);
+		cmd === 'ls' && await bucketsClient.ls(region, options);
+		cmd === 'current' && await bucketsClient.current(bucket, options);
 	}
 
-	protected async ls(credentials: TwoLeggedClient, region: GetBucketsRegionEnum, options: any): Promise<Buckets | null> {
+	protected async ls(region: Region, options: any): Promise<Buckets | null> {
 		try {
 			let buckets: Buckets = {
 				items: [],
@@ -56,7 +58,6 @@ export class BucketsClient {
 			};
 			for (let startAt: string | undefined = undefined; ;) {
 				const response: Buckets = await this.client.getBuckets(
-					credentials.access_token, // Sajith - needs to be string | () => string
 					{
 						...options,
 						region,
@@ -86,7 +87,7 @@ export class BucketsClient {
 		}
 	}
 
-	protected async current(credentials: TwoLeggedClient, bucket: string, options: any): Promise<string | null> {
+	protected async current(bucket: string, options: any): Promise<string | null> {
 		try {
 			let bucketKey: string = await DataMgr.instance.data('bucket') || '';
 			if (bucket !== undefined) {

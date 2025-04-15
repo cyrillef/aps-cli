@@ -1,18 +1,20 @@
 {
+	"type": "module",
 	"compilerOptions": {
-		"target": "es2020",
-		"types": ["node"],
+		"module": "NodeNext",
+		"target": "ESNext",
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+
 		"composite": true,
 		"noImplicitReturns": true,
 		"sourceMap": true,
-		"strict": true,
 		"alwaysStrict": true,
 		"noImplicitAny": true,
 		"experimentalDecorators": true,
 		"emitDecoratorMetadata": true,
-		"skipLibCheck": true,
 		"resolveJsonModule": true,
-		"esModuleInterop": true,
 		"removeComments": true
 	},
 	"include": [

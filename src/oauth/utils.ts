@@ -23,11 +23,8 @@ import jwksClient from 'jwks-rsa';
 import { SdkManager } from '@aps_sdk/autodesk-sdkmanager'
 import { AuthenticationClient, Scopes, TwoLeggedToken, ThreeLeggedToken, } from '@aps_sdk/authentication';
 
-import AppSettings from '@/app/app-settings';
-import { sdkmanager } from '@/aps';
 import DataMgr from '@/utils/dataMgr';
-import TLogger, { errorMessage } from '@/utils/logger';
-import SimplifiedScopes from '@/oauth/scopes';
+import { errorMessage } from '@/utils/logger';
 
 export interface IOauthClient {
 
@@ -37,19 +34,24 @@ export interface IOauthClient {
 	get expired(): boolean;
 	get access_token(): string;
 
+	loadCredentials(): Promise<any>;
+	saveCredentials(data: any): Promise<void>;
+
 	toString(): string;
 
 }
 
 export abstract class OauthClientUtils implements IOauthClient {
 
-	private authenticationClient: AuthenticationClient;
-	private autoRefresh: NodeJS.Timeout | null = null;
-	private _token: TwoLeggedToken | ThreeLeggedToken | null = null;
-	private _scopes: Scopes[] = [Scopes.ViewablesRead];
+	protected authenticationClient: AuthenticationClient;
+	protected autoRefresh: NodeJS.Timeout | null = null;
+	protected _token: TwoLeggedToken | ThreeLeggedToken | null = null;
+	protected _scopes: Scopes[] = [Scopes.ViewablesRead];
 
-	protected constructor(private sdkmanager: SdkManager) {
-		this.authenticationClient = new AuthenticationClient(this.sdkmanager);
+	protected constructor(protected sdkmanager: SdkManager, protected _storageKey: string) {
+		this.authenticationClient = new AuthenticationClient({
+			sdkManager: this.sdkmanager,
+		});
 	}
 
 	// Sajith - TwoLeggedToken has all its properties optionals - that is incorrect
@@ -64,13 +66,32 @@ export abstract class OauthClientUtils implements IOauthClient {
 		throw new Error('Requires a valid token!');
 	}
 
+	public get storageKey(): string { return (this._storageKey); }
+	public get scopes(): Scopes[] { return (this._scopes); }
+
+	public async loadCredentials(): Promise<any> {
+		return (await DataMgr.instance.data(this._storageKey));
+	}
+
+	public async saveCredentials(data: any): Promise<void> {
+		await DataMgr.instance.store(this._storageKey, data);
+		await DataMgr.instance.store('last', this._storageKey); // latest token (default)
+	}
+
+	public static async getLastTokenType(): Promise<string | null> {
+		const lastTokenType: string | null = await DataMgr.instance.data('last');
+		if (lastTokenType)
+			return (lastTokenType);
+		return (null);
+	}
+
 	public toString(): string {
 		return (JSON.stringify(this.token, null, 4));
 	}
 
 	protected async decode(options: any, silent: boolean = false): Promise<jwt.Jwt | null> {
 		try {
-			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
+			const credentials: TwoLeggedToken = await this.loadCredentials();
 			const decoded: jwt.Jwt | null = jwt.decode(credentials.access_token as string, { complete: true });
 
 			options.json && !silent && console.log(JSON.stringify(decoded, null, 4));
@@ -83,6 +104,7 @@ export abstract class OauthClientUtils implements IOauthClient {
 				} else {
 					console.log(`\tClient ID: ${(decoded?.payload as jwt.JwtPayload).client_id}`);
 					console.log(`\tScopes: ${(decoded?.payload as jwt.JwtPayload).scope.join(' ')}`);
+					console.log(`\tToken will expire at: ${moment(1000 * ((decoded?.payload as jwt.JwtPayload).exp || 0)).format('dddd, MMMM Do YYYY, h:mm:ss a')}`);
 				}
 			}
 			return (decoded);
@@ -93,7 +115,7 @@ export abstract class OauthClientUtils implements IOauthClient {
 
 	protected async verify(options: any): Promise<jwt.Jwt | null> {
 		try {
-			const credentials: TwoLeggedToken = await DataMgr.instance.data('2legged');
+			const credentials: TwoLeggedToken = await this.loadCredentials();
 			const decoded: jwt.Jwt | null = jwt.decode(credentials.access_token as string, { complete: true });
 
 			const header: jwt.JwtHeader | undefined = decoded?.header;
@@ -144,6 +166,7 @@ export abstract class OauthClientUtils implements IOauthClient {
 				console.log('Valid token');
 				console.log(`\tClient ID: ${(results?.payload as any).client_id}`);
 				console.log(`\tScopes: ${(results?.payload as any).scope.join(' ')}`);
+				console.log(`\tToken will expire at: ${moment(1000 * (results?.payload as any).exp).format('dddd, MMMM Do YYYY, h:mm:ss a')}`);
 			}
 
 			return (decoded);

@@ -35,7 +35,7 @@ export const apsConfig: ApsConfiguration = new ApsConfiguration({
 	environment: AdskEnvironment.Prd,
 });
 
-export const sdkmanager: SdkManager = SdkManagerBuilder
+export const sdkManager: SdkManager = SdkManagerBuilder
 	.create()
 	.addApsConfiguration(apsConfig)
 	// Sajith - add the TLogger here does not suppress the 1st message from the addApsConfiguration.
@@ -57,34 +57,33 @@ program
 
 program.command('2legged')
 	.description('Authorization commands')
-	.argument('<cmd>', 'commands: [token] | decode | verify | ')
-	.argument('[scopes]', 'string to specify app context scopes \'r w br bw bd u e\' (default: r)')
+	.argument('[cmd]', 'commands: [token] | decode | verify | ') //, 'token')
+	.argument('[scopes]', 'string to specify app context scopes \'v r w br bw bd u e\' (default: v)', 'v')
 	//.option('-u, --urn <urn...>', 'resource URN scope') // todo
 
 	.option('-t, --text', 'output results in text vs json (default is json)')
 	.option('-j, --json', 'output results in json format vs text (default is json)')
 	.option('-d, --debug', 'debug messages')
 	.hook('preAction', outputFormat)
-	.action(TwoLeggedClient.twoLegged);
+	.action(TwoLeggedClient.execute);
 
 program.command('3legged')
 	.description('Authorization commands')
 	.argument('<cmd>', 'commands: [token] | refresh | decode | verify |')
-	.argument('[scopes]', 'string to specify app context scopes \'r w\' (default: r)')
+	.argument('[scopes]', 'string to specify app context scopes \'v r w\' (default: v)', 'v')
 	//.option('-u, --urn <urn...>', 'resource URN scope') // todo
 
 	.option('-t, --text', 'output results in text vs json (default is json)')
 	.option('-j, --json', 'output results in json format vs text (default is json)')
 	.option('-d, --debug', 'debug messages')
 	.hook('preAction', outputFormat)
-	.action(ThreeLeggedClient.threeLegged);
+	.action(ThreeLeggedClient.execute);
 
 program.command('buckets')
 	.description('Bucket commands')
 	.argument('<cmd>', 'commands: ls | current | ')
 	.argument('[bucket]', 'bucket key')
 	.option('-r, --region <region>', 'region: US | EMEA | APAC (default: US)')
-
 	.option('-t, --text', 'output results in text vs json (default is json)')
 	.option('-j, --json', 'output results in json format vs text (default is json)')
 	.option('-d, --debug', 'debug messages')
@@ -95,8 +94,9 @@ program.command('objects')
 	.description('Objects commands')
 	.argument('<cmd>', 'commands: ls | current | put-object | get-object-details |')
 	.argument('[name]', 'object key')
+	.option('-c, --credentials <credentials>', 'use 2legged | 3legged | last credentials (override default) (default: last)')
 	.option('-b, --bucket <bucket>', 'bucket key (override default)')
-	.option('-k, --key <key>', 'object key (override default)')
+	//.option('-k, --key <key>', 'object key (override default)')
 	.option('--body <body>', 'body to upload in the bucket')
 	//.option('-s, --search <beginsWith>', 'find object beginning with') // todo
 
@@ -110,6 +110,7 @@ program.command('objects')
 program.command('derivatives')
 	.description('Model Derivatives commands')
 	.argument('<cmd>', 'commands: manifest | set-references | invoke | ')
+	.option('-c, --credentials <credentials>', 'use 2legged | 3legged | last credentials (override default) (default: last)')
 	.option('-b, --bucket <bucket>', 'bucket key (override default)')
 	.option('-k, --key <key>', 'object key (override default)')
 	.option('-u, --urn <urn>', 'urn (override default)')
@@ -129,6 +130,7 @@ program.command('derivatives')
 program.command('viewer')
 	.description('Viwewer commands')
 	.argument('<cmd>', 'commands: create | launch | ')
+	.option('-c, --credentials <credentials>', 'use 2legged | 3legged | last credentials (override default) (default: last)')
 	.option('-b, --bucket <bucket>', 'bucket key (override default)')
 	.option('-k, --key <key>', 'object key (override default)')
 	.option('-u, --urn <urn>', 'urn (override default)')
